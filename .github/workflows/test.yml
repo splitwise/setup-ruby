@@ -30,6 +30,7 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
     - run: ruby -v
+    - run: gem install path
     - name: build compiler
       run: |
         ruby -e "puts 'build compiler: ' + RbConfig::CONFIG.fetch('CC_VERSION_MESSAGE', 'unknown').lines.first"
