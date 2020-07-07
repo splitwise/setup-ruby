@@ -3,6 +3,7 @@ const path = require('path')
 const exec = require('@actions/exec')
 const io = require('@actions/io')
 const tc = require('@actions/tool-cache')
+const common = require('./common')
 const rubyBuilderVersions = require('./ruby-builder-versions')
 
 const builderReleaseTag = 'enable-shared'
@@ -12,10 +13,10 @@ export function getAvailableVersions(platform, engine) {
   return rubyBuilderVersions.getVersions(platform)[engine]
 }
 
-export async function install(platform, ruby) {
-  const rubyPrefix = await downloadAndExtract(platform, ruby)
+export async function install(platform, engine, version) {
+  const rubyPrefix = await downloadAndExtract(platform, engine, version)
   let newPathEntries
-  if (ruby.startsWith('rubinius')) {
+  if (engine === 'rubinius') {
     newPathEntries = [path.join(rubyPrefix, 'bin'), path.join(rubyPrefix, 'gems', 'bin')]
   } else {
     newPathEntries = [path.join(rubyPrefix, 'bin')]
@@ -23,29 +24,37 @@ export async function install(platform, ruby) {
   return [rubyPrefix, newPathEntries]
 }
 
-async function downloadAndExtract(platform, ruby) {
+async function downloadAndExtract(platform, engine, version) {
   const rubiesDir = path.join(os.homedir(), '.rubies')
   await io.mkdirP(rubiesDir)
 
-  const url = await getDownloadURL(platform, ruby)
-  console.log(url)
+  const downloadPath = await common.measure('Downloading Ruby', async () => {
+    const url = getDownloadURL(platform, engine, version)
+    console.log(url)
+    return await tc.downloadTool(url)
+  })
 
-  const downloadPath = await tc.downloadTool(url)
-  const tar = platform.startsWith('windows') ? 'C:\\Windows\\system32\\tar.exe' : 'tar'
-  await exec.exec(tar, [ '-xz', '-C', rubiesDir, '-f',  downloadPath ])
+  await common.measure('Extracting Ruby', async () => {
+    if (process.env.ImageOS === 'win16') {
+      const tar = '"C:\\Program Files\\Git\\usr\\bin\\tar.exe"'
+      await exec.exec(tar, [ '-xz', '-C', common.win2nix(rubiesDir), '-f', common.win2nix(downloadPath) ])
+    } else {
+      const tar = platform.startsWith('windows') ? 'C:\\Windows\\system32\\tar.exe' : 'tar'
+      await exec.exec(tar, [ '-xz', '-C', rubiesDir, '-f',  downloadPath ])
+    }
+  })
 
-  return path.join(rubiesDir, ruby)
+  return path.join(rubiesDir, `${engine}-${version}`)
 }
 
-function getDownloadURL(platform, ruby) {
-  if (ruby.endsWith('-head')) {
-    return getLatestHeadBuildURL(platform, ruby)
+function getDownloadURL(platform, engine, version) {
+  if (common.isHeadVersion(version)) {
+    return getLatestHeadBuildURL(platform, engine, version)
   } else {
-    return `${releasesURL}/download/${builderReleaseTag}/${ruby}-${platform}.tar.gz`
+    return `${releasesURL}/download/${builderReleaseTag}/${engine}-${version}-${platform}.tar.gz`
   }
 }
 
-function getLatestHeadBuildURL(platform, ruby) {
-  const engine = ruby.split('-')[0]
-  return `https://github.com/ruby/${engine}-dev-builder/releases/latest/download/${engine}-head-${platform}.tar.gz`
+function getLatestHeadBuildURL(platform, engine, version) {
+  return `https://github.com/ruby/${engine}-dev-builder/releases/latest/download/${engine}-${version}-${platform}.tar.gz`
 }
