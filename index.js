@@ -6,6 +6,8 @@ const exec = require('@actions/exec')
 const cache = require('@actions/cache')
 const common = require('./common')
 
+const windows = common.windows
+
 const inputDefaults = {
   'ruby-version': 'default',
   'bundler': 'default',
@@ -26,7 +28,7 @@ export async function run() {
 export async function setupRuby(options = {}) {
   const inputs = { ...options }
   for (const key in inputDefaults) {
-    if (!inputs.hasOwnProperty(key)) {
+    if (!Object.prototype.hasOwnProperty.call(inputs, key)) {
       inputs[key] = core.getInput(key) || inputDefaults[key]
     }
   }
@@ -47,10 +49,9 @@ export async function setupRuby(options = {}) {
   const version = validateRubyEngineAndVersion(platform, engineVersions, engine, parsedVersion)
 
   createGemRC()
+  envPreInstall()
 
-  const [rubyPrefix, newPathEntries] = await installer.install(platform, engine, version)
-
-  setupPath(newPathEntries)
+  const rubyPrefix = await installer.install(platform, engine, version)
 
   // When setup-ruby is used by other actions, this allows code in them to run
   // before 'bundle install'.  Installed dependencies may require additional
@@ -60,16 +61,42 @@ export async function setupRuby(options = {}) {
   }
 
   if (inputs['bundler'] !== 'none') {
+    const [gemfile, lockFile] = detectGemfiles()
+
     await common.measure('Installing Bundler', async () =>
-      installBundler(inputs['bundler'], platform, rubyPrefix, engine, version))
+      installBundler(inputs['bundler'], lockFile, platform, rubyPrefix, engine, version))
 
     if (inputs['bundler-cache'] === 'true') {
       await common.measure('bundle install', async () =>
-          bundleInstall(platform, engine, version))
+          bundleInstall(gemfile, lockFile, platform, engine, version))
     }
   }
 
   core.setOutput('ruby-prefix', rubyPrefix)
+}
+
+function detectGemfiles() {
+  const gemfilePath = process.env['BUNDLE_GEMFILE'] || 'Gemfile'
+  if (fs.existsSync(gemfilePath)) {
+    const lockPath = `${gemfilePath}.lock`
+    if (fs.existsSync(lockPath)) {
+      return [gemfilePath, lockPath]
+    } else {
+      return [gemfilePath, null]
+    }
+  }
+
+  const gemsRbPath = "gems.rb"
+  if (fs.existsSync(gemsRbPath)) {
+    const lockPath = "gems.locked"
+    if (fs.existsSync(lockPath)) {
+      return [gemsRbPath, lockPath]
+    } else {
+      return [gemsRbPath, null]
+    }
+  }
+
+  return [null, null]
 }
 
 function parseRubyEngineAndVersion(rubyVersion) {
@@ -135,27 +162,23 @@ function createGemRC() {
   }
 }
 
-function setupPath(newPathEntries) {
-  const originalPath = process.env['PATH'].split(path.delimiter)
-  let cleanPath = originalPath.filter(entry => !/\bruby\b/i.test(entry))
-
-  if (cleanPath.length !== originalPath.length) {
-    core.startGroup('Cleaning PATH')
-    console.log('Entries removed from PATH to avoid conflicts with Ruby:')
-    for (const entry of originalPath) {
-      if (!cleanPath.includes(entry)) {
-        console.log(`  ${entry}`)
-      }
-    }
-    core.endGroup()
+// sets up ENV variables
+// currently only used on Windows runners
+function envPreInstall() {
+  const ENV = process.env
+  if (windows) {
+    // puts normal Ruby temp folder on SSD
+    core.exportVariable('TMPDIR', ENV['RUNNER_TEMP'])
+    // bash - sets home to match native windows, normally C:\Users\<user name>
+    core.exportVariable('HOME', ENV['HOMEDRIVE'] + ENV['HOMEPATH'])
+    // bash - needed to maintain Path from Windows
+    core.exportVariable('MSYS2_PATH_TYPE', 'inherit')
   }
-
-  core.exportVariable('PATH', [...newPathEntries, ...cleanPath].join(path.delimiter))
 }
 
-function readBundledWithFromGemfileLock() {
-  if (fs.existsSync('Gemfile.lock')) {
-    const contents = fs.readFileSync('Gemfile.lock', 'utf8')
+function readBundledWithFromGemfileLock(lockFile) {
+  if (lockFile !== null) {
+    const contents = fs.readFileSync(lockFile, 'utf8')
     const lines = contents.split(/\r?\n/)
     const bundledWithLine = lines.findIndex(line => /^BUNDLED WITH$/.test(line.trim()))
     if (bundledWithLine !== -1) {
@@ -163,7 +186,7 @@ function readBundledWithFromGemfileLock() {
       if (nextLine && /^\d+/.test(nextLine.trim())) {
         const bundlerVersion = nextLine.trim()
         const majorVersion = bundlerVersion.match(/^\d+/)[0]
-        console.log(`Using Bundler ${majorVersion} from Gemfile.lock BUNDLED WITH ${bundlerVersion}`)
+        console.log(`Using Bundler ${majorVersion} from ${lockFile} BUNDLED WITH ${bundlerVersion}`)
         return majorVersion
       }
     }
@@ -171,11 +194,12 @@ function readBundledWithFromGemfileLock() {
   return null
 }
 
-async function installBundler(bundlerVersionInput, platform, rubyPrefix, engine, rubyVersion) {
+async function installBundler(bundlerVersionInput, lockFile, platform, rubyPrefix, engine, rubyVersion) {
   var bundlerVersion = bundlerVersionInput
 
   if (bundlerVersion === 'default' || bundlerVersion === 'Gemfile.lock') {
-    bundlerVersion = readBundledWithFromGemfileLock()
+    bundlerVersion = readBundledWithFromGemfileLock(lockFile)
+
     if (!bundlerVersion) {
       bundlerVersion = 'latest'
     }
@@ -191,8 +215,8 @@ async function installBundler(bundlerVersionInput, platform, rubyPrefix, engine,
     throw new Error(`Cannot parse bundler input: ${bundlerVersion}`)
   }
 
-  if (rubyVersion.startsWith('2.2')) {
-    console.log('Bundler 2 requires Ruby 2.3+, using Bundler 1 on Ruby 2.2')
+  if (rubyVersion.match(/^2\.[12]/)) {
+    console.log('Bundler 2 requires Ruby 2.3+, using Bundler 1 on Ruby <= 2.2')
     bundlerVersion = '1'
   } else if (rubyVersion.startsWith('2.3')) {
     console.log('Ruby 2.3 has a bug with Bundler 2 (https://github.com/rubygems/rubygems/issues/3570), using Bundler 1 instead on Ruby 2.3')
@@ -211,16 +235,16 @@ async function installBundler(bundlerVersionInput, platform, rubyPrefix, engine,
   }
 }
 
-async function bundleInstall(platform, engine, version) {
-  if (!fs.existsSync('Gemfile')) {
-    console.log('No Gemfile, skipping "bundle install" and caching')
-    return
+async function bundleInstall(gemfile, lockFile, platform, engine, version) {
+  if (gemfile === null) {
+    console.log('Could not determine gemfile path, skipping "bundle install" and caching')
+    return false
   }
 
   // config
   const path = 'vendor/bundle'
-  const hasGemfileLock = fs.existsSync('Gemfile.lock');
-  if (hasGemfileLock) {
+
+  if (lockFile !== null) {
     await exec.exec('bundle', ['config', '--local', 'deployment', 'true'])
   }
   await exec.exec('bundle', ['config', '--local', 'path', path])
@@ -230,10 +254,10 @@ async function bundleInstall(platform, engine, version) {
   const baseKey = await computeBaseKey(platform, engine, version)
   let key = baseKey
   let restoreKeys
-  if (hasGemfileLock) {
-    key += `-Gemfile.lock-${await common.hashFile('Gemfile.lock')}`
+  if (lockFile !== null) {
+    key += `-${lockFile}-${await common.hashFile(lockFile)}`
     // If only Gemfile.lock we can reuse some of the cache (but it will keep old gem versions in the cache)
-    restoreKeys = [`${baseKey}-Gemfile.lock-`]
+    restoreKeys = [`${baseKey}-${lockFile}-`]
   } else {
     // Only exact key, to never mix native gems of different platforms or Ruby versions
     restoreKeys = []
@@ -241,7 +265,17 @@ async function bundleInstall(platform, engine, version) {
   console.log(`Cache key: ${key}`)
 
   // restore cache & install
-  const cachedKey = await cache.restoreCache(paths, key, restoreKeys)
+  let cachedKey = null
+  try {
+    cachedKey = await cache.restoreCache(paths, key, restoreKeys)
+  } catch (error) {
+    if (error.name === cache.ValidationError.name) {
+      throw error;
+    } else {
+      core.info(`[warning] There was an error restoring the cache ${error.message}`)
+    }
+  }
+
   if (cachedKey) {
     console.log(`Found cache for key: ${cachedKey}`)
   }
@@ -269,11 +303,13 @@ async function bundleInstall(platform, engine, version) {
       }
     }
   }
+
+  return true
 }
 
 async function computeBaseKey(platform, engine, version) {
   let baseKey = `setup-ruby-bundle-install-${platform}-${engine}-${version}`
-  if (engine === 'ruby' && common.isHeadVersion(version)) {
+  if (engine !== 'jruby' && common.isHeadVersion(version)) {
     let revision = '';
     await exec.exec('ruby', ['-e', 'print RUBY_REVISION'], {
       silent: true,

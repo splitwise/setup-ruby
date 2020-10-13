@@ -14,16 +14,17 @@ This action currently supports these versions of MRI, JRuby and TruffleRuby:
 
 | Interpreter | Versions |
 | ----------- | -------- |
-| Ruby | 2.2, 2.3.0 - 2.3.8, 2.4.0 - 2.4.10, 2.5.0 - 2.5.8, 2.6.0 - 2.6.6, 2.7.1, head, debug, mingw, mswin |
-| JRuby | 9.1.17.0, 9.2.9.0 - 9.2.12.0, head |
-| TruffleRuby | 19.3.0 - 20.1.0, head |
+| Ruby | 2.1.9, 2.2, 2.3.0 - 2.3.8, 2.4.0 - 2.4.10, 2.5.0 - 2.5.8, 2.6.0 - 2.6.6, 2.7.2, head, debug, mingw, mswin |
+| JRuby | 9.1.17.0, 9.2.9.0 - 9.2.13.0, head |
+| TruffleRuby | 19.3.0 - 20.2.0, head |
 | Rubinius | 4.14 |
 
 `ruby-debug` is the same as `ruby-head` but with assertions enabled (`-DRUBY_DEBUG=1`).  
 On Windows, `mingw` and `mswin` are `ruby-head` builds using the MSYS2/MinGW and the MSVC toolchains respectively.
 
-Ruby 2.2 resolves to 2.2.6 on Windows (last build from RubyInstaller) and 2.2.10 otherwise.  
-Ruby 2.3 on Windows only has builds for 2.3.0, 2.3.1 and 2.3.3 (same as RubyInstaller).
+Only versions published by [RubyInstaller](https://rubyinstaller.org/downloads/archives/) are available on Windows.
+Due to that, Ruby 2.2 resolves to 2.2.6 on Windows and 2.2.10 on other platforms.
+And Ruby 2.3 on Windows only has builds for 2.3.0, 2.3.1 and 2.3.3.
 
 Note that Ruby ≤ 2.3 and the OpenSSL version it needs (1.0.2) are both end-of-life,
 which means Ruby ≤ 2.3 is unmaintained and considered insecure.
@@ -108,11 +109,16 @@ and the [condition and expression syntax](https://help.github.com/en/actions/ref
 * `.tool-versions` reads from the project's `.tool-versions` file
 * If the `ruby-version` input is not specified, `.ruby-version` is tried first, followed by `.tool-versions`
 
+### Working Directory
+
+The `working-directory` input can be set to resolve `.ruby-version`, `.tool-versions` and `Gemfile.lock`
+if they are not at the root of the repository, see [action.yml](action.yml) for details.
+
 ### Bundler
 
-By default, if there is a `Gemfile.lock` file with a `BUNDLED WITH` section,
+By default, if there is a `Gemfile.lock` file (or `$BUNDLE_GEMFILE.lock` or `gems.locked`) with a `BUNDLED WITH` section,
 the latest version of Bundler with the same major version will be installed.
-Otherwise, the latest Bundler version is installed (except for Ruby 2.2 and 2.3 where only Bundler 1 is supported).
+Otherwise, the latest compatible Bundler version is installed (Bundler 2 on Ruby >= 2.4, Bundler 1 on Ruby < 2.4).
 
 This behavior can be customized, see [action.yml](action.yml) for details about the `bundler` input.
 
@@ -126,9 +132,8 @@ This action provides a way to automatically run `bundle install` and cache the r
 ```
 
 This caching speeds up installing gems significantly and avoids too many requests to RubyGems.org.  
-It needs a `Gemfile` under the [`working-directory`](#working-directory).  
-The caching works whether there is a `Gemfile.lock` or not.
-If there is a `Gemfile.lock`, `bundle config --local deployment true` is used.
+It needs a `Gemfile` (or `$BUNDLE_GEMFILE` or `gems.rb`) under the [`working-directory`](#working-directory).  
+If there is a `Gemfile.lock` (or `$BUNDLE_GEMFILE.lock` or `gems.locked`), `bundle config --local deployment true` is used.
 
 To perform caching, this action will use `bundle config --local path vendor/bundle`.  
 Therefore, the Bundler `path` should not be changed in your workflow for the cache to work.
@@ -159,14 +164,8 @@ When using `.ruby-version`, replace `${{ matrix.ruby }}` with `${{ hashFiles('.r
 When using `.tool-versions`, replace `${{ matrix.ruby }}` with `${{ hashFiles('.tool-versions') }}`.
 
 This uses the [cache action](https://github.com/actions/cache).
-The code above is a more complete version of the [Ruby - Bundler example](https://github.com/actions/cache/blob/master/examples.md#ruby---\
-bundler).
+The code above is a more complete version of the [Ruby - Bundler example](https://github.com/actions/cache/blob/master/examples.md#ruby---bundler).
 Make sure to include `use-ruby` in the `key` to avoid conflicting with previous caches.
-
-### Working Directory
-
-The `working-directory` input can be set to resolve `.ruby-version`, `.tool-versions` and `Gemfile.lock`
-if they are not at the root of the repository, see [action.yml](action.yml) for details.
 
 ## Windows
 
@@ -192,9 +191,17 @@ Make sure to always use the latest release before reporting an issue on GitHub.
 This action follows semantic versioning with a moving `v1` branch.
 This follows the [recommendations](https://github.com/actions/toolkit/blob/master/docs/action-versioning.md) of GitHub Actions.
 
-## Limitations
+## Using self-hosted runners
 
-* This action currently only works with GitHub-hosted runners, not private runners.
+This action might work with [self-hosted runners](https://docs.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners)
+if the [virtual environment](https://github.com/actions/virtual-environments) is very similar to the ones used by GitHub runners. Notably:
+
+* Make sure to use the same operating system and version.
+* Make sure to use the same version of libssl.
+* Make sure that the operating system has `libyaml-0` installed
+* The runner software is running as user `runner` with a home directory of `/home/runner`, or you have created a symlink for the home directory of whatever user that the runner is running as to `/home/runner`.
+
+In other cases, please use a system Ruby or [install Ruby manually](https://github.com/postmodern/chruby/wiki#installing-rubies) instead.
 
 ## History
 
